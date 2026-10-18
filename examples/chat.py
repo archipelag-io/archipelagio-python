@@ -3,6 +3,7 @@ Example: Chat completion with the Archipelag SDK
 """
 
 import os
+
 from archipelag import Client
 
 # Get API key from environment

@@ -2,14 +2,13 @@
 Tests for the Archipelag Python SDK client.
 """
 
-import pytest
-from archipelag import Client, AsyncClient
-from archipelag.models import Job, JobStatus, Usage, StreamEvent, StreamEventType
+from archipelag import AsyncClient, Client
 from archipelag.exceptions import (
     AuthenticationError,
     NotFoundError,
     RateLimitError,
 )
+from archipelag.models import Job, JobStatus, StreamEvent, StreamEventType, Usage
 
 
 class TestModels:

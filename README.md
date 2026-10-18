@@ -67,6 +67,7 @@ asyncio.run(main())
 - **Type hints** with Pydantic models
 - **Automatic retries** and error handling
 - **Cargo helpers** for chat, image generation, and more
+- **Tool calling**: turn Python functions into tools and let `run_agent` drive the loop
 
 ## API Reference
 
@@ -75,7 +76,7 @@ asyncio.run(main())
 ```python
 client = Client(
     api_key="ak_xxx",           # Your API key
-    base_url="https://...",     # Optional: custom API URL
+    base_url="https://app.archipelag.io",  # Optional: custom API URL
     timeout=60.0,               # Optional: request timeout
 )
 ```
@@ -103,6 +104,57 @@ for event in client.chat_stream("Tell me a joke"):
     elif event.type == "done":
         print(f"\n[{event.usage.total_tokens} tokens]")
 ```
+
+`chat` and `chat_stream` pick a model automatically; pass `workload="gguf-qwen3.5-9b"`
+(any chat Cargo slug) to choose one.
+
+### Chat Completions (OpenAI-compatible)
+
+Full control over the conversation, with any OpenAI parameter:
+
+```python
+response = client.chat_completion(
+    [
+        {"role": "system", "content": "Answer in one sentence."},
+        {"role": "user", "content": "What is an archipelago?"},
+    ],
+    model="auto",
+    temperature=0.3,
+)
+print(response["choices"][0]["message"]["content"])
+
+for chunk in client.chat_completion_stream(messages):
+    print(chunk["choices"][0]["delta"].get("content", ""), end="")
+```
+
+### Tool Calling and Agents
+
+Decorate a function with `@tool`; its signature and docstring become the
+tool's schema. `run_agent` sends the conversation, runs the tools the model
+asks for, feeds the results back, and returns the final answer.
+
+```python
+from archipelag import tool
+
+@tool
+def get_weather(city: str, unit: str = "celsius") -> dict:
+    """Current weather for a city."""
+    return {"city": city, "temp": 4, "unit": unit}
+
+result = client.run_agent(
+    [{"role": "user", "content": "Should I bring an umbrella in Oslo?"}],
+    tools=[get_weather],
+    max_steps=6,                       # most tool rounds before giving up
+    on_step=lambda message: print(message.get("tool_calls") or message["content"]),
+)
+print(result.content)      # final answer
+print(result.messages)     # full conversation, including tool calls and results
+```
+
+Tool errors are sent to the model as the tool's result, so it can recover.
+With `AsyncClient`, tools may be `async def` and a round's calls run
+concurrently. You can also pass OpenAI tool dicts to `chat_completion(tools=...)`
+and handle `message["tool_calls"]` yourself.
 
 ### Image Generation
 
@@ -144,8 +196,8 @@ for job in results:
 ```python
 # Create job manually
 job = client.create_job(
-    workload="llm-chat",
-    input={"prompt": "Hello!"}
+    workload="gguf-qwen3.5-9b",
+    input={"messages": [{"role": "user", "content": "Hello!"}]}
 )
 
 # Check status

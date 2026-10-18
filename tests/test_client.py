@@ -61,7 +61,7 @@ class TestClient:
         """Test client initialization."""
         client = Client(api_key="ak_test")
         assert client.api_key == "ak_test"
-        assert client.base_url == "https://api.archipelag.io"
+        assert client.base_url == "https://app.archipelag.io"
         client.close()
 
     def test_client_custom_base_url(self):

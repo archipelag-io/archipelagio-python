@@ -4,9 +4,11 @@ Archipelag SDK Client
 Main client classes for interacting with the Archipelag.io API.
 """
 
+import asyncio
+import json
 import time
 from datetime import datetime
-from typing import Any, AsyncIterator, Iterator, Optional, Union
+from typing import Any, AsyncIterator, Callable, Iterator, Optional, Sequence, Union
 
 import httpx
 from httpx_sse import connect_sse, aconnect_sse
@@ -38,9 +40,71 @@ from archipelag.models import (
     Usage,
     Workload,
 )
+from archipelag.tools import (
+    DEFAULT_MAX_STEPS,
+    AgentResult,
+    Tool,
+    add_usage,
+    arun_call,
+    as_tool,
+    run_call,
+)
 
-DEFAULT_BASE_URL = "https://api.archipelag.io"
+DEFAULT_BASE_URL = "https://app.archipelag.io"
 DEFAULT_TIMEOUT = 60.0
+# Chat completions wait for an Island to generate the whole answer
+CHAT_TIMEOUT = 180.0
+
+ToolLike = Union[Tool, Callable[..., Any], dict[str, Any]]
+
+
+def _chat_payload(
+    messages: list[dict[str, Any]],
+    model: str,
+    tools: Optional[Sequence[ToolLike]],
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"model": model, "messages": messages}
+    payload.update({k: v for k, v in params.items() if v is not None})
+    if tools:
+        payload["tools"] = [t if isinstance(t, dict) else as_tool(t).definition() for t in tools]
+    return payload
+
+
+def _stream_chunk(data: str) -> Optional[dict[str, Any]]:
+    """Parse one SSE data line; None at the end of the stream."""
+    if data == "[DONE]":
+        return None
+    chunk: dict[str, Any] = json.loads(data)
+    if "error" in chunk:
+        raise JobFailedError(chunk["error"].get("message", "Chat completion failed"))
+    return chunk
+
+
+def _chat_result(response: dict[str, Any]) -> ChatResult:
+    choice = response["choices"][0]
+    usage = response.get("usage") or {}
+    return ChatResult(
+        content=choice["message"].get("content") or "",
+        job_id=response.get("id", ""),
+        usage=Usage(
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+        ),
+        model=response.get("model"),
+        finish_reason=choice.get("finish_reason"),
+    )
+
+
+def _simple_messages(prompt: str, system_prompt: Optional[str]) -> list[dict[str, Any]]:
+    messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
+    return messages + [{"role": "user", "content": prompt}]
+
+
+def _tools_by_name(tools: Sequence[Union[Tool, Callable[..., Any]]]) -> dict[str, Tool]:
+    resolved = [as_tool(t) for t in tools]
+    return {t.name: t for t in resolved}
 
 
 class Client:
@@ -64,7 +128,7 @@ class Client:
 
         Args:
             api_key: Your Archipelag API key (starts with 'ak_')
-            base_url: API base URL (default: https://api.archipelag.io)
+            base_url: API base URL (default: https://app.archipelag.io)
             timeout: Request timeout in seconds (default: 60)
         """
         self.api_key = api_key
@@ -108,7 +172,7 @@ class Client:
             raise InsufficientCreditsError(message, status_code=402)
         elif response.status_code == 404:
             raise NotFoundError(message, status_code=404)
-        elif response.status_code == 422:
+        elif response.status_code in (400, 422):
             errors = error_data.get("errors") if "error_data" in dir() else None
             raise ValidationError(message, errors=errors, status_code=422)
         elif response.status_code == 429:
@@ -297,13 +361,130 @@ class Client:
     # High-level helpers (convenience methods)
     # =========================================================================
 
+    def chat_completion(
+        self,
+        messages: list[dict[str, Any]],
+        model: str = "auto",
+        *,
+        tools: Optional[Sequence[ToolLike]] = None,
+        **params: Any,
+    ) -> dict[str, Any]:
+        """
+        Create a chat completion (OpenAI-compatible).
+
+        Args:
+            messages: OpenAI-style messages, including `tool` results
+            model: A Cargo slug, an OpenAI alias, or "auto"
+            tools: `Tool`s, plain functions, or OpenAI tool definitions
+            **params: Any other OpenAI parameter (temperature, max_tokens,
+                tool_choice, response_format, seed, stop, enable_thinking...)
+
+        Returns:
+            The OpenAI-shaped response (`choices[0].message` may hold
+            `tool_calls`)
+        """
+        payload = _chat_payload(messages, model, tools, params)
+        response = self._client.post(
+            "/api/v1/chat/completions", json=payload, timeout=max(self.timeout, CHAT_TIMEOUT)
+        )
+        return self._handle_response(response)
+
+    def chat_completion_stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str = "auto",
+        *,
+        tools: Optional[Sequence[ToolLike]] = None,
+        **params: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """
+        Stream a chat completion as OpenAI `chat.completion.chunk` dicts.
+
+        Raises:
+            JobFailedError: if the Island fails mid-stream
+        """
+        payload = _chat_payload(messages, model, tools, params)
+        payload["stream"] = True
+        with connect_sse(
+            self._client,
+            "POST",
+            "/api/v1/chat/completions",
+            json=payload,
+            timeout=max(self.timeout, CHAT_TIMEOUT),
+        ) as event_source:
+            if event_source.response.status_code != 200:
+                event_source.response.read()
+                self._handle_response(event_source.response)
+            for sse in event_source.iter_sse():
+                chunk = _stream_chunk(sse.data)
+                if chunk is None:
+                    break
+                yield chunk
+
+    def run_agent(
+        self,
+        messages: list[dict[str, Any]],
+        tools: Sequence[Union[Tool, Callable[..., Any]]],
+        model: str = "auto",
+        *,
+        max_steps: int = DEFAULT_MAX_STEPS,
+        on_step: Optional[Callable[[dict[str, Any]], None]] = None,
+        **params: Any,
+    ) -> AgentResult:
+        """
+        Run a tool-using conversation until the model answers.
+
+        Each round sends the conversation with the tools; when the model
+        asks for tools they run locally and their results go back to it.
+
+        Args:
+            messages: The conversation so far (not modified)
+            tools: `Tool`s or plain functions (see `archipelag.tool`)
+            model: A Cargo slug or "auto"
+            max_steps: Most tool rounds before giving up
+            on_step: Called with each assistant message as it arrives
+            **params: Passed to `chat_completion`
+
+        Returns:
+            AgentResult with the final answer and the full conversation
+        """
+        by_name = _tools_by_name(tools)
+        conversation = list(messages)
+        usage = Usage()
+
+        for step in range(max_steps + 1):
+            response = self.chat_completion(
+                conversation, model, tools=list(by_name.values()), **params
+            )
+            usage = add_usage(usage, response)
+            choice = response["choices"][0]
+            message = choice["message"]
+            conversation.append(message)
+            if on_step:
+                on_step(message)
+
+            calls = message.get("tool_calls") or []
+            if not calls:
+                return AgentResult(
+                    content=message.get("content") or "",
+                    messages=conversation,
+                    steps=step,
+                    finish_reason=choice.get("finish_reason"),
+                    usage=usage,
+                )
+            if step == max_steps:
+                break
+            conversation.extend(run_call(by_name, call) for call in calls)
+
+        raise ArchipelagError(f"Model still calling tools after {max_steps} rounds")
+
     def chat(
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
-        workload: str = "llm-chat",
+        workload: str = "auto",
     ) -> ChatResult:
         """
         Send a chat message and get a response.
@@ -313,28 +494,18 @@ class Client:
             system_prompt: Optional system prompt
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0-2)
-            workload: Workload to use (default: llm-chat)
+            workload: Cargo slug to use, or "auto" (default)
 
         Returns:
             ChatResult with the response
         """
-        input_data: dict[str, Any] = {"prompt": prompt}
-        if system_prompt:
-            input_data["system_prompt"] = system_prompt
-        if max_tokens:
-            input_data["max_tokens"] = max_tokens
-        if temperature is not None:
-            input_data["temperature"] = temperature
-
-        job = self.create_job(workload, input_data)
-        job = self.wait_for_job(job.id)
-
-        return ChatResult(
-            content=job.output or "",
-            job_id=job.id,
-            usage=job.usage or Usage(),
-            finish_reason="stop" if job.is_success else "error",
+        response = self.chat_completion(
+            _simple_messages(prompt, system_prompt),
+            workload,
+            max_tokens=max_tokens,
+            temperature=temperature,
         )
+        return _chat_result(response)
 
     def chat_stream(
         self,
@@ -342,7 +513,7 @@ class Client:
         system_prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
-        workload: str = "llm-chat",
+        workload: str = "auto",
     ) -> Iterator[StreamEvent]:
         """
         Send a chat message and stream the response.
@@ -352,21 +523,26 @@ class Client:
             system_prompt: Optional system prompt
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0-2)
-            workload: Workload to use (default: llm-chat)
+            workload: Cargo slug to use, or "auto" (default)
 
         Yields:
-            StreamEvent objects
+            StreamEvent objects: TOKEN for each piece of text, then DONE
         """
-        input_data: dict[str, Any] = {"prompt": prompt}
-        if system_prompt:
-            input_data["system_prompt"] = system_prompt
-        if max_tokens:
-            input_data["max_tokens"] = max_tokens
-        if temperature is not None:
-            input_data["temperature"] = temperature
-
-        job = self.create_job(workload, input_data)
-        yield from self.stream_job(job.id)
+        usage: Optional[Usage] = None
+        for chunk in self.chat_completion_stream(
+            _simple_messages(prompt, system_prompt),
+            workload,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream_options={"include_usage": True},
+        ):
+            if chunk.get("usage"):
+                usage = Usage(**chunk["usage"])
+            for choice in chunk.get("choices") or []:
+                content = (choice.get("delta") or {}).get("content")
+                if content:
+                    yield StreamEvent(type=StreamEventType.TOKEN, content=content)
+        yield StreamEvent(type=StreamEventType.DONE, usage=usage)
 
     def generate_image(
         self,
@@ -603,7 +779,7 @@ class AsyncClient:
 
         Args:
             api_key: Your Archipelag API key (starts with 'ak_')
-            base_url: API base URL (default: https://api.archipelag.io)
+            base_url: API base URL (default: https://app.archipelag.io)
             timeout: Request timeout in seconds (default: 60)
         """
         self.api_key = api_key
@@ -647,7 +823,7 @@ class AsyncClient:
             raise InsufficientCreditsError(message, status_code=402)
         elif response.status_code == 404:
             raise NotFoundError(message, status_code=404)
-        elif response.status_code == 422:
+        elif response.status_code in (400, 422):
             errors = error_data.get("errors") if "error_data" in dir() else None
             raise ValidationError(message, errors=errors, status_code=422)
         elif response.status_code == 429:
@@ -739,32 +915,110 @@ class AsyncClient:
     # High-level helpers
     # =========================================================================
 
+    async def chat_completion(
+        self,
+        messages: list[dict[str, Any]],
+        model: str = "auto",
+        *,
+        tools: Optional[Sequence[ToolLike]] = None,
+        **params: Any,
+    ) -> dict[str, Any]:
+        """Create a chat completion (OpenAI-compatible). See `Client.chat_completion`."""
+        payload = _chat_payload(messages, model, tools, params)
+        response = await self._client.post(
+            "/api/v1/chat/completions", json=payload, timeout=max(self.timeout, CHAT_TIMEOUT)
+        )
+        return await self._handle_response(response)
+
+    async def chat_completion_stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str = "auto",
+        *,
+        tools: Optional[Sequence[ToolLike]] = None,
+        **params: Any,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream a chat completion as OpenAI chunk dicts. See `Client.chat_completion_stream`."""
+        payload = _chat_payload(messages, model, tools, params)
+        payload["stream"] = True
+        async with aconnect_sse(
+            self._client,
+            "POST",
+            "/api/v1/chat/completions",
+            json=payload,
+            timeout=max(self.timeout, CHAT_TIMEOUT),
+        ) as event_source:
+            if event_source.response.status_code != 200:
+                await event_source.response.aread()
+                await self._handle_response(event_source.response)
+            async for sse in event_source.aiter_sse():
+                chunk = _stream_chunk(sse.data)
+                if chunk is None:
+                    break
+                yield chunk
+
+    async def run_agent(
+        self,
+        messages: list[dict[str, Any]],
+        tools: Sequence[Union[Tool, Callable[..., Any]]],
+        model: str = "auto",
+        *,
+        max_steps: int = DEFAULT_MAX_STEPS,
+        on_step: Optional[Callable[[dict[str, Any]], None]] = None,
+        **params: Any,
+    ) -> AgentResult:
+        """
+        Run a tool-using conversation until the model answers. Tool
+        functions may be async; a round's tool calls run concurrently.
+        See `Client.run_agent`.
+        """
+        by_name = _tools_by_name(tools)
+        conversation = list(messages)
+        usage = Usage()
+
+        for step in range(max_steps + 1):
+            response = await self.chat_completion(
+                conversation, model, tools=list(by_name.values()), **params
+            )
+            usage = add_usage(usage, response)
+            choice = response["choices"][0]
+            message = choice["message"]
+            conversation.append(message)
+            if on_step:
+                on_step(message)
+
+            calls = message.get("tool_calls") or []
+            if not calls:
+                return AgentResult(
+                    content=message.get("content") or "",
+                    messages=conversation,
+                    steps=step,
+                    finish_reason=choice.get("finish_reason"),
+                    usage=usage,
+                )
+            if step == max_steps:
+                break
+            results = await asyncio.gather(*(arun_call(by_name, call) for call in calls))
+            conversation.extend(results)
+
+        raise ArchipelagError(f"Model still calling tools after {max_steps} rounds")
+
     async def chat(
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
-        workload: str = "llm-chat",
+        workload: str = "auto",
     ) -> ChatResult:
         """Send a chat message and get a response."""
-        input_data: dict[str, Any] = {"prompt": prompt}
-        if system_prompt:
-            input_data["system_prompt"] = system_prompt
-        if max_tokens:
-            input_data["max_tokens"] = max_tokens
-        if temperature is not None:
-            input_data["temperature"] = temperature
-
-        job = await self.create_job(workload, input_data)
-        job = await self.wait_for_job(job.id)
-
-        return ChatResult(
-            content=job.output or "",
-            job_id=job.id,
-            usage=job.usage or Usage(),
-            finish_reason="stop" if job.is_success else "error",
+        response = await self.chat_completion(
+            _simple_messages(prompt, system_prompt),
+            workload,
+            max_tokens=max_tokens,
+            temperature=temperature,
         )
+        return _chat_result(response)
 
     async def chat_stream(
         self,
@@ -772,20 +1026,24 @@ class AsyncClient:
         system_prompt: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
-        workload: str = "llm-chat",
+        workload: str = "auto",
     ) -> AsyncIterator[StreamEvent]:
-        """Send a chat message and stream the response."""
-        input_data: dict[str, Any] = {"prompt": prompt}
-        if system_prompt:
-            input_data["system_prompt"] = system_prompt
-        if max_tokens:
-            input_data["max_tokens"] = max_tokens
-        if temperature is not None:
-            input_data["temperature"] = temperature
-
-        job = await self.create_job(workload, input_data)
-        async for event in self.stream_job(job.id):
-            yield event
+        """Send a chat message and stream the response (TOKEN events, then DONE)."""
+        usage: Optional[Usage] = None
+        async for chunk in self.chat_completion_stream(
+            _simple_messages(prompt, system_prompt),
+            workload,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream_options={"include_usage": True},
+        ):
+            if chunk.get("usage"):
+                usage = Usage(**chunk["usage"])
+            for choice in chunk.get("choices") or []:
+                content = (choice.get("delta") or {}).get("content")
+                if content:
+                    yield StreamEvent(type=StreamEventType.TOKEN, content=content)
+        yield StreamEvent(type=StreamEventType.DONE, usage=usage)
 
     async def generate_image(
         self,

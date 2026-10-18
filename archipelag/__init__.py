@@ -16,9 +16,23 @@ Example usage:
     for event in client.chat_stream("Tell me a story"):
         if event.type == "token":
             print(event.content, end="", flush=True)
+
+    # Tool calling: the model calls your Python functions
+    from archipelag import tool
+
+    @tool
+    def get_weather(city: str) -> str:
+        "Current weather for a city."
+        return "4°C and raining"
+
+    result = client.run_agent(
+        [{"role": "user", "content": "Weather in Oslo?"}], tools=[get_weather]
+    )
+    print(result.content)
 """
 
 from archipelag.client import Client, AsyncClient
+from archipelag.tools import AgentResult, Tool, tool
 from archipelag.models import (
     BatchChild,
     BatchConfig,
@@ -49,6 +63,10 @@ __all__ = [
     # Clients
     "Client",
     "AsyncClient",
+    # Tool calling
+    "AgentResult",
+    "Tool",
+    "tool",
     # Models
     "BatchChild",
     "BatchConfig",

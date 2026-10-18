@@ -42,8 +42,8 @@ dev = [
 [project.urls]
 Homepage = "https://archipelag.io"
 Documentation = "https://docs.archipelag.io/sdk/python"
-Repository = "https://github.com/archipelag-io/archipelag-python"
-Issues = "https://github.com/archipelag-io/archipelag-python/issues"
+Repository = "https://github.com/archipelag-io/archipelagio-python"
+Issues = "https://github.com/archipelag-io/archipelagio-python/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["archipelag"]

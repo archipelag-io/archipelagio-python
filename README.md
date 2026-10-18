@@ -1,7 +1,7 @@
 <p align="center">
   <a href="https://pypi.org/project/archipelag/"><img src="https://img.shields.io/pypi/v/archipelag?color=blue" alt="PyPI"></a>
   <a href="https://pypi.org/project/archipelag/"><img src="https://img.shields.io/pypi/pyversions/archipelag" alt="Python versions"></a>
-  <a href="https://github.com/archipelag-io/archipelag-python/blob/main/LICENSE"><img src="https://img.shields.io/github/license/archipelag-io/archipelag-python" alt="License"></a>
+  <a href="https://github.com/archipelag-io/archipelagio-python/blob/main/LICENSE"><img src="https://img.shields.io/github/license/archipelag-io/archipelagio-python" alt="License"></a>
 </p>
 
 # Archipelag.io Python SDK

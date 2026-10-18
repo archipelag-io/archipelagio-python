@@ -58,7 +58,7 @@ from archipelag.models import (
 )
 from archipelag.tools import AgentResult, Tool, tool
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     # Clients
     "Client",

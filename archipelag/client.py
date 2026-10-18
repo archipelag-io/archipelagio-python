@@ -25,13 +25,10 @@ from archipelag.exceptions import (
 from archipelag.models import (
     Account,
     ApiKey,
-    BatchChild,
     BatchConfig,
     BatchJob,
     BatchProgress,
-    ChatRequest,
     ChatResult,
-    ImageRequest,
     ImageResult,
     Job,
     JobStatus,
@@ -160,7 +157,8 @@ class Client:
     def _handle_response(self, response: httpx.Response) -> dict[str, Any]:
         """Handle API response and raise appropriate exceptions."""
         if response.status_code == 200 or response.status_code == 201:
-            return response.json()
+            data: dict[str, Any] = response.json()
+            return data
 
         try:
             error_data = response.json()
@@ -710,7 +708,7 @@ class Client:
         batch_id: str,
         poll_interval: float = 2.0,
         timeout: Optional[float] = None,
-        on_progress: Optional[callable] = None,
+        on_progress: Optional[Callable[[int, int, int], None]] = None,
     ) -> BatchJob:
         """
         Wait for a batch job to complete, with optional progress callback.
@@ -753,9 +751,7 @@ class Client:
             if timeout and (time.time() - start) > timeout:
                 from archipelag.exceptions import TimeoutError
 
-                raise TimeoutError(
-                    f"Batch {batch_id} did not complete within {timeout}s"
-                )
+                raise TimeoutError(f"Batch {batch_id} did not complete within {timeout}s")
 
             time.sleep(poll_interval)
 
@@ -811,7 +807,8 @@ class AsyncClient:
     async def _handle_response(self, response: httpx.Response) -> dict[str, Any]:
         """Handle API response and raise appropriate exceptions."""
         if response.status_code == 200 or response.status_code == 201:
-            return response.json()
+            data: dict[str, Any] = response.json()
+            return data
 
         try:
             error_data = response.json()
@@ -1138,9 +1135,7 @@ class AsyncClient:
 
     async def get_batch_status(self, batch_id: str) -> BatchProgress:
         """Get detailed progress of a batch job."""
-        response = await self._client.get(
-            f"/api/v1/jobs/{batch_id}/batch-status"
-        )
+        response = await self._client.get(f"/api/v1/jobs/{batch_id}/batch-status")
         data = await self._handle_response(response)
         return BatchProgress(**data)
 
@@ -1149,7 +1144,7 @@ class AsyncClient:
         batch_id: str,
         poll_interval: float = 2.0,
         timeout: Optional[float] = None,
-        on_progress: Optional[callable] = None,
+        on_progress: Optional[Callable[[int, int, int], None]] = None,
     ) -> BatchJob:
         """
         Wait for a batch job to complete, with optional progress callback.
@@ -1177,9 +1172,7 @@ class AsyncClient:
             if progress.parent_state in ("succeeded", "failed", "cancelled"):
                 job = await self.get_job(batch_id)
                 if job.status == JobStatus.FAILED:
-                    raise JobFailedError(
-                        job.error or "Batch failed", job_id=batch_id
-                    )
+                    raise JobFailedError(job.error or "Batch failed", job_id=batch_id)
                 return BatchJob(
                     id=batch_id,
                     state=progress.parent_state,
@@ -1196,8 +1189,6 @@ class AsyncClient:
             if timeout and (time.time() - start) > timeout:
                 from archipelag.exceptions import TimeoutError
 
-                raise TimeoutError(
-                    f"Batch {batch_id} did not complete within {timeout}s"
-                )
+                raise TimeoutError(f"Batch {batch_id} did not complete within {timeout}s")
 
             await asyncio.sleep(poll_interval)

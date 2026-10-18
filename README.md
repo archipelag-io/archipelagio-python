@@ -32,11 +32,7 @@ for event in client.chat_stream("Tell me a story"):
         print(event.content, end="", flush=True)
 
 # Image generation
-image = client.generate_image(
-    prompt="a sunset over mountains",
-    width=1024,
-    height=1024
-)
+image = client.generate_image(prompt="a sunset over mountains", width=1024, height=1024)
 # image.image_data contains base64-encoded PNG
 ```
 
@@ -45,6 +41,7 @@ image = client.generate_image(
 ```python
 import asyncio
 from archipelag import AsyncClient
+
 
 async def main():
     async with AsyncClient(api_key="ak_xxx") as client:
@@ -56,6 +53,7 @@ async def main():
         async for event in client.chat_stream("Tell me a story"):
             if event.type == "token":
                 print(event.content, end="", flush=True)
+
 
 asyncio.run(main())
 ```
@@ -75,9 +73,9 @@ asyncio.run(main())
 
 ```python
 client = Client(
-    api_key="ak_xxx",           # Your API key
+    api_key="ak_xxx",  # Your API key
     base_url="https://app.archipelag.io",  # Optional: custom API URL
-    timeout=60.0,               # Optional: request timeout
+    timeout=60.0,  # Optional: request timeout
 )
 ```
 
@@ -136,19 +134,21 @@ asks for, feeds the results back, and returns the final answer.
 ```python
 from archipelag import tool
 
+
 @tool
 def get_weather(city: str, unit: str = "celsius") -> dict:
     """Current weather for a city."""
     return {"city": city, "temp": 4, "unit": unit}
 
+
 result = client.run_agent(
     [{"role": "user", "content": "Should I bring an umbrella in Oslo?"}],
     tools=[get_weather],
-    max_steps=6,                       # most tool rounds before giving up
+    max_steps=6,  # most tool rounds before giving up
     on_step=lambda message: print(message.get("tool_calls") or message["content"]),
 )
-print(result.content)      # final answer
-print(result.messages)     # full conversation, including tool calls and results
+print(result.content)  # final answer
+print(result.messages)  # full conversation, including tool calls and results
 ```
 
 Tool errors are sent to the model as the tool's result, so it can recover.
@@ -171,6 +171,7 @@ result = client.generate_image(
 
 # Save image
 import base64
+
 with open("output.png", "wb") as f:
     f.write(base64.b64decode(result.image_data))
 ```
@@ -179,11 +180,13 @@ with open("output.png", "wb") as f:
 
 ```python
 # Create multiple jobs
-jobs = client.batch([
-    {"workload": "sdxl", "input": {"prompt": "a cat"}},
-    {"workload": "sdxl", "input": {"prompt": "a dog"}},
-    {"workload": "sdxl", "input": {"prompt": "a bird"}},
-])
+jobs = client.batch(
+    [
+        {"workload": "sdxl", "input": {"prompt": "a cat"}},
+        {"workload": "sdxl", "input": {"prompt": "a dog"}},
+        {"workload": "sdxl", "input": {"prompt": "a bird"}},
+    ]
+)
 
 # Wait for all to complete
 results = client.wait_all(jobs)
@@ -196,8 +199,7 @@ for job in results:
 ```python
 # Create job manually
 job = client.create_job(
-    workload="gguf-qwen3.5-9b",
-    input={"messages": [{"role": "user", "content": "Hello!"}]}
+    workload="gguf-qwen3.5-9b", input={"messages": [{"role": "user", "content": "Hello!"}]}
 )
 
 # Check status

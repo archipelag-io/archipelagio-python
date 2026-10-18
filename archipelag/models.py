@@ -6,9 +6,9 @@ Pydantic models for API requests and responses.
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class JobStatus(str, Enum):

@@ -25,7 +25,7 @@ from archipelag import Client
 
 client = Client(
     api_key="ak_xxx",
-    base_url="https://api.archipelag.io",
+    base_url="https://app.archipelag.io",
     timeout=60.0,
 )
 

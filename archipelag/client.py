@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any, AsyncIterator, Callable, Iterator, Optional, Sequence, Union
 
 import httpx
-from httpx_sse import connect_sse, aconnect_sse
+from httpx_sse import EventSource, aconnect_sse, connect_sse
 
 from archipelag.exceptions import (
     ArchipelagError,
@@ -51,6 +51,8 @@ from archipelag.tools import (
 )
 
 DEFAULT_BASE_URL = "https://app.archipelag.io"
+# Servers that only accept JSON reject a bare text/event-stream Accept
+STREAM_ACCEPT = "text/event-stream, application/json"
 DEFAULT_TIMEOUT = 60.0
 # Chat completions wait for an Island to generate the whole answer
 CHAT_TIMEOUT = 180.0
@@ -405,17 +407,17 @@ class Client:
         """
         payload = _chat_payload(messages, model, tools, params)
         payload["stream"] = True
-        with connect_sse(
-            self._client,
+        with self._client.stream(
             "POST",
             "/api/v1/chat/completions",
             json=payload,
+            headers={"Accept": STREAM_ACCEPT, "Cache-Control": "no-store"},
             timeout=max(self.timeout, CHAT_TIMEOUT),
-        ) as event_source:
-            if event_source.response.status_code != 200:
-                event_source.response.read()
-                self._handle_response(event_source.response)
-            for sse in event_source.iter_sse():
+        ) as response:
+            if response.status_code != 200:
+                response.read()
+                self._handle_response(response)
+            for sse in EventSource(response).iter_sse():
                 chunk = _stream_chunk(sse.data)
                 if chunk is None:
                     break
@@ -941,17 +943,17 @@ class AsyncClient:
         """Stream a chat completion as OpenAI chunk dicts. See `Client.chat_completion_stream`."""
         payload = _chat_payload(messages, model, tools, params)
         payload["stream"] = True
-        async with aconnect_sse(
-            self._client,
+        async with self._client.stream(
             "POST",
             "/api/v1/chat/completions",
             json=payload,
+            headers={"Accept": STREAM_ACCEPT, "Cache-Control": "no-store"},
             timeout=max(self.timeout, CHAT_TIMEOUT),
-        ) as event_source:
-            if event_source.response.status_code != 200:
-                await event_source.response.aread()
-                await self._handle_response(event_source.response)
-            async for sse in event_source.aiter_sse():
+        ) as response:
+            if response.status_code != 200:
+                await response.aread()
+                await self._handle_response(response)
+            async for sse in EventSource(response).aiter_sse():
                 chunk = _stream_chunk(sse.data)
                 if chunk is None:
                     break

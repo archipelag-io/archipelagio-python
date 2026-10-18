@@ -205,6 +205,8 @@ def test_chat_completion_stream_yields_chunks(httpx_mock):
     assert "".join(c["choices"][0]["delta"].get("content", "") for c in chunks) == "Hello"
     assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
     assert sent_json(httpx_mock)["stream"] is True
+    # Works with servers that only accept JSON
+    assert httpx_mock.get_requests()[-1].headers["accept"] == "text/event-stream, application/json"
 
 
 def test_stream_errors_raise(httpx_mock):

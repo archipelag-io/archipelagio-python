@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "archipelag"
-version = "0.1.0"
+version = "0.2.0"
 description = "Official Python SDK for Archipelag.io distributed compute platform"
 readme = "README.md"
 license = "MIT"

@@ -139,7 +139,7 @@ class Client:
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "archipelag-python/0.1.0",
+                "User-Agent": "archipelag-python/0.2.0",
             },
             timeout=timeout,
         )
@@ -789,7 +789,7 @@ class AsyncClient:
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "archipelag-python/0.1.0",
+                "User-Agent": "archipelag-python/0.2.0",
             },
             timeout=timeout,
         )
